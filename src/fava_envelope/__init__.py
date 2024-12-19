@@ -15,7 +15,27 @@ class EnvelopeBudget(FavaExtensionBase):
 
     report_title = "Envelope Budget"
 
+    def after_delete_entry(self, entry):
+        self.reset_cache()
+    def after_entry_modified(self, entry, new_lines):
+        self.reset_cache()
+    def after_insert_entry(self, entry):
+        self.reset_cache()
+    def after_insert_metadata(self, entry, key, value):
+        self.reset_cache()
+    def after_load_file(self):
+        self.reset_cache()
+    def after_write_source(self, path, source):
+        self.reset_cache()
+
+    def reset_cache(self):
+        print("before_request")
+        self.ran_budget_df = False
+
     def generate_budget_df(self, currency):
+        if self.ran_budget_df:
+            return
+
         self.currency = currency
         module = BeancountEnvelope(
             g.ledger.all_entries, self.ledger.options, self.currency
@@ -25,6 +45,8 @@ class EnvelopeBudget(FavaExtensionBase):
             self.envelope_tables,
             self.currency,
         ) = module.envelope_tables()
+
+        self.ran_budget_df = True
 
     def get_budgets_months_available(self, currency):
         self.generate_budget_df(currency)
