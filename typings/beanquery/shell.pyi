@@ -85,7 +85,7 @@ class DispatchingShell(cmd.Cmd):
         ...
     
     @property
-    def output(self): # -> ConditionalPager | _GeneratorContextManager[Any] | nullcontext[None]:
+    def output(self): # -> nullcontext[None]:
         """Where to direct command output.
 
         When the output stream is connected to the standard output,
