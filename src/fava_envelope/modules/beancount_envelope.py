@@ -1,37 +1,74 @@
-# Debug
-from __future__ import annotations
-
-import collections
 import datetime
-import logging
 import re
+import typing
+from collections import defaultdict
+from collections.abc import Iterable
+from decimal import Decimal
+from typing import Any
 
-import pandas as pd
-from beancount.core import account_types
-from beancount.core import amount
-from beancount.core import convert
-from beancount.core import data
-from beancount.core import inventory
-from beancount.core import prices
-from beancount.core.data import Custom
-from beancount.core.number import Decimal
+import beanquery
+from beancount.core import convert, data, prices
+from beancount.core.amount import Amount
+from beancount.core.data import Account, Custom, Meta
+from beancount.core.inventory import Inventory
 from beancount.parser import options
-from beancount.query import query
 from dateutil.relativedelta import relativedelta
+from fava.beans.types import BeancountOptions
+from fava.helpers import BeancountError
+
+from fava_envelope.modules import convert as envelope_convert
+from fava_envelope.modules import directive
+from fava_envelope.modules.budgets import Envelope, Income
+from fava_envelope.modules.year_month import YearMonth, months_between
 
 
 class BeancountEnvelope:
-    def __init__(self, entries, options_map, currency):
+    """Class responsible for generating the budget tables."""
+
+    start_date: YearMonth
+    end_date: YearMonth  # Inclusive range
+
+    # Regex of beancount account and corresponding budgeting account
+    mappings: list[tuple[re.Pattern, str]]
+
+    # The list of currencies that the envelope allows with no conversions, first
+    # element of the list is the primary currency.
+    operating_currency: list[str]
+
+    etype: str  # Custom directive type used by fava-envelope
+
+    envelope_df: defaultdict[
+        Account,
+        defaultdict[YearMonth, Envelope],
+    ]
+    income_df: defaultdict[
+        YearMonth,
+        Income,
+    ]
+
+    price_map: prices.PriceMap
+
+    available_months: list[YearMonth]
+
+    include_starting_balance: bool
+
+    errors: list[BeancountError]
+
+    def __init__(
+        self,
+        entries: list[Any],
+        options_map: BeancountOptions,
+        currency: str | None,
+        errors: list[BeancountError],
+    ):
         self.entries = entries
         self.options_map = options_map
-        self.currency = currency
         self.negative_rollover = False
         self.months_ahead = 0
+        self.errors = errors
+        self.available_months = []
 
-        if self.currency:
-            self.etype = "envelope" + self.currency
-        else:
-            self.etype = "envelope"
+        self.etype = "envelope"
 
         (
             self.start_date,
@@ -39,227 +76,291 @@ class BeancountEnvelope:
             self.mappings,
             self.income_accounts,
             self.months_ahead,
-        ) = self._find_envelop_settings()
+            self.operating_currency,
+        ) = self._find_envelope_settings()
 
-        if not self.currency:
-            self.currency = self._find_currency(options_map)
+        if currency:
+            self.operating_currency = [currency]
+        elif len(self.operating_currency) == 0:
+            self.operating_currency = self._find_fallback_currency(options_map)
 
         decimal_precison = "0.00"
         self.Q = Decimal(decimal_precison)
 
-        # Compute start of period
-        # TODO get start date from journal
-        today = datetime.date.today()
-        self.date_start = datetime.datetime.strptime(
-            self.start_date, "%Y-%m"
-        ).date()
-
         # TODO should be able to assert errors
 
-        # Compute end of period
-        self.date_end = datetime.date(
-            today.year, today.month, today.day
-        ) + relativedelta(months=+self.months_ahead)
+        self.end_date = YearMonth.of_date(
+            datetime.date.today() + relativedelta(months=+self.months_ahead)
+        )
 
         self.price_map = prices.build_price_map(entries)
         self.acctypes = options.get_account_types(options_map)
 
-    def _find_currency(self, options_map):
+    def _find_fallback_currency(self, options_map: BeancountOptions) -> list[str]:
         default_currency = "USD"
         opt_currency = options_map.get("operating_currency")
-        currency = opt_currency[0] if opt_currency else default_currency
-        if len(currency) == 3:
-            return currency
+        return opt_currency if opt_currency else [default_currency]
 
-        logging.warning(
-            f"invalid operating currency: {currency},"
-            + "defaulting to {default_currency}"
-        )
-        return default_currency
-
-    def _find_envelop_settings(self):
-        start_date = None
+    def _find_envelope_settings(
+        self,
+    ) -> tuple[YearMonth, list, list, list, int, list[str]]:
+        extension_init_date: YearMonth = YearMonth(1970, 1)
+        start_date: YearMonth | None = None
         budget_accounts = []
         mappings = []
         income_accounts = []
         months_ahead = 0
+        operating_currencies: list[str] = []
+        self.include_starting_balance = True
 
         for e in self.entries:
+            if (
+                isinstance(e, Custom)
+                and e.type == "fava-extension"
+                and e.values[0].value == "fava_envelope"
+            ):
+                extension_init_date = YearMonth.of_date(e.date)
             if isinstance(e, Custom) and e.type == self.etype:
                 if e.values[0].value == "start date":
-                    start_date = e.values[1].value
+                    start_date = YearMonth.of_string(e.values[1].value)
                 if e.values[0].value == "budget account":
                     budget_accounts.append(re.compile(e.values[1].value))
-                if e.values[0].value == "mapping":
-                    map_set = (
-                        re.compile(e.values[1].value),
-                        e.values[2].value,
-                    )
-                    mappings.append(map_set)
+                if e_parsed := directive.parse_directive_as(
+                    e, directive.Mapping, self.etype, self.errors
+                ):
+                    mappings.append((e_parsed.pattern, e_parsed.account))
                 if e.values[0].value == "income account":
                     income_accounts.append(re.compile(e.values[1].value))
                 if e.values[0].value == "currency":
-                    self.currency = e.values[1].value
+                    currency = e.values[1].value
+                    if not isinstance(currency, str):
+                        self._append_error(
+                            e.meta,
+                            "Operating currency should be specified as a string.",
+                        )
+                        continue
+                    if currency in operating_currencies:
+                        self._append_error(e.meta, "Operating currency declared twice")
+                        continue
+                    operating_currencies.append(currency)
                 if e.values[0].value == "negative rollover":
+                    self._append_error(
+                        e.meta,
+                        "'negative rollover' directive is deprecated. Use '... \"allow negative rollowver\" BOOL'.",
+                    )
                     if e.values[1].value == "allow":
                         self.negative_rollover = True
+                if e.values[0].value == "allow negative rollover":
+                    arg = e.values[1]
+                    if arg.dtype is not bool:
+                        self._append_error(
+                            e.meta,
+                            f"'allow negative rollover' expects bool argument, got {arg.dtype}",
+                        )
+                        continue
+                    self.negative_rollover = arg.value
                 if e.values[0].value == "months ahead":
                     months_ahead = int(e.values[1].value)
+                if e.values[0].value == "include starting balance":
+                    arg = e.values[1]
+                    if arg.dtype is not bool:
+                        self._append_error(
+                            e.meta,
+                            f"'include starting balance' expects bool argument, got {arg.dtype}",
+                        )
+                        continue
+                    self.include_starting_balance = arg.value
+
         return (
-            start_date,
+            start_date if start_date else extension_init_date,
             budget_accounts,
             mappings,
             income_accounts,
             months_ahead,
+            operating_currencies,
         )
 
     def envelope_tables(self):
-        months = []
-        date_current = self.date_start
-        while date_current < self.date_end:
-            months.append(
-                f"{date_current.year}-{str(date_current.month).zfill(2)}"
-            )
-            month = date_current.month - 1 + 1
-            year = date_current.year + month // 12
-            month = month % 12 + 1
-            date_current = datetime.date(year, month, 1)
+        self.available_months = []
+        months = self.available_months
 
-        # Create Income DataFrame
-        column_index = pd.MultiIndex.from_product([months], names=["Month"])
-        self.income_df = pd.DataFrame(columns=months)
+        for month in months_between(self.start_date, self.end_date):
+            months.append(month)
 
-        # Create Envelopes DataFrame
-        column_index = pd.MultiIndex.from_product(
-            [months, ["budgeted", "activity", "available"]],
-            names=["Month", "col"],
-        )
-        self.envelope_df = pd.DataFrame(columns=column_index)
-        self.envelope_df.index.name = "Envelopes"
+        self.income_df = defaultdict(Income)
+        self.envelope_df = defaultdict(lambda: defaultdict(Envelope))
 
         self._calculate_budget_activity()
         self._calc_budget_budgeted()
 
         # Calculate Starting Balance Income
-        starting_balance = Decimal(0.0)
-        query_str = (
-            f"select account, convert(sum(position),'{self.currency}')"
-            + f" from close on {months[0]}-01 group by 1 order by 1;"
-        )
-        rows = query.run_query(
-            self.entries, self.options_map, query_str, numberify=True
-        )
-        for row in rows[1]:
-            if any(regexp.match(row[0]) for regexp in self.budget_accounts):
-                if len(row) > 1 and row[1] is not None:
-                    starting_balance += row[1]
-        self.income_df.loc["Avail Income", months[0]] += starting_balance
-
-        self.envelope_df.fillna(Decimal(0.00), inplace=True)
+        if self.include_starting_balance:
+            self.income_df[months[0]].avail_income += self._get_starting_balance()
 
         # Set available
-        for index, row in self.envelope_df.iterrows():
-            for index2, month in enumerate(months):
-                if index2 == 0:
-                    self.envelope_df.loc[index, (month, "available")] = (
-                        row[month, "budgeted"] + row[month, "activity"]
-                    )
+        for envelope_account, envelope_months in self.envelope_df.items():
+            for month_index, month in enumerate(months):
+                if month_index == 0:
+                    prev_available = Inventory()
                 else:
-                    prev_available = self.envelope_df[
-                        months[index2 - 1], "available"
-                    ][index]
-                    if prev_available > 0 or self.negative_rollover:
-                        self.envelope_df.loc[index, (month, "available")] = (
-                            prev_available
-                            + row[month, "budgeted"]
-                            + row[month, "activity"]
-                        )
-                    else:
-                        self.envelope_df.loc[index, (month, "available")] = (
-                            row[month, "budgeted"] + row[month, "activity"]
-                        )
+                    prev_available = envelope_months[months[month_index - 1]].available
+
+                # TODO(memst): add a changelog note that negative rollover will
+                # convert eventhing to the primary currency (the first currency
+                # declared as operating_currency) in order to determine if the
+                # envelope balance was negative.
+                # TODO(memst): Here we check only the primary currency, we should
+                # just filter the prev inventory with positive allowences or
+                # convert the entire inventory to primary currency and deduce
+                # whether the total allowence was positive.
+                if (not self.negative_rollover) and (
+                    self.reduce_inventory_to_currency(prev_available, month) < 0
+                ):
+                    prev_available = Inventory()
+
+                if envelope_months[month].allocate_fill:
+                    envelope_months[month].budgeted = -(
+                        prev_available + envelope_months[month].activity
+                    )
+                    available = Inventory()
+                else:
+                    available = (
+                        prev_available
+                        + envelope_months[month].budgeted
+                        + envelope_months[month].activity
+                    )
+                envelope_months[
+                    month
+                ].available = envelope_convert.reduce_mixed_positions(
+                    available,
+                    self.price_map,
+                    self.operating_currency,
+                    month.last_day(),
+                )
 
         # Set overspent
-        for index, month in enumerate(months):
-            if index == 0:
-                self.income_df.loc["Overspent", month] = Decimal(0.00)
+        for month_index, month in enumerate(months):
+            if month_index == 0:
+                self.income_df[month].overspent = Inventory()
             else:
                 overspent = Decimal(0.00)
-                for index2, row in self.envelope_df.iterrows():
-                    if row[months[index - 1], "available"] < Decimal(0.00):
-                        overspent += Decimal(
-                            row[months[index - 1], "available"]
-                        )
-                self.income_df.loc["Overspent", month] = overspent
+                for envelope_account, account_data in self.envelope_df.items():
+                    available = self.reduce_inventory_to_currency(
+                        account_data[months[month_index - 1]].available, month
+                    )
+                    if available < Decimal(0.00):
+                        overspent += available
+                inventory = Inventory()
+                inventory.add_amount(Amount(overspent, self.operating_currency[0]))
+                self.income_df[month].overspent = inventory
 
         # Set Budgeted for month
         for month in months:
-            self.income_df.loc["Budgeted", month] = Decimal(
-                -1 * self.envelope_df[month, "budgeted"].sum()
+            self.income_df[month].budgeted = -sum(
+                [
+                    account_data[month].budgeted
+                    for account_data in self.envelope_df.values()
+                ],
+                Inventory(),
             )
 
         # Adjust Avail Income
         for index, month in enumerate(months):
             if index == 0:
                 continue
-            else:
-                prev_month = months[index - 1]
-                self.income_df.loc["Avail Income", month] = (
-                    self.income_df.loc["Avail Income", month]
-                    + self.income_df.loc["Avail Income", prev_month]
-                    + self.income_df.loc["Overspent", prev_month]
-                    + self.income_df.loc["Budgeted", prev_month]
-                )
-
-        # Set Budgeted in the future
-        for index, month in enumerate(months):
-            sum_total = self.income_df[month].sum()
-            if (index == len(months) - 1) or sum_total < 0:
-                self.income_df.loc["Budgeted Future", month] = Decimal(0.00)
-            else:
-                next_month = months[index + 1]
-                opp_budgeted_next_month = (
-                    self.income_df.loc["Budgeted", next_month] * -1
-                )
-                if opp_budgeted_next_month < sum_total:
-                    self.income_df.loc["Budgeted Future", month] = Decimal(
-                        -1 * opp_budgeted_next_month
-                    )
-                else:
-                    self.income_df.loc["Budgeted Future", month] = Decimal(
-                        -1 * sum_total
-                    )
-
-        # Set to be budgeted
-        for index, month in enumerate(months):
-            self.income_df.loc["To Be Budgeted", month] = Decimal(
-                self.income_df[month].sum()
+            prev_income = self.income_df[months[index - 1]]
+            income = self.income_df[month]
+            income.avail_income = envelope_convert.reduce_mixed_positions(
+                income.avail_income + prev_income.avail_income + prev_income.budgeted,
+                self.price_map,
+                self.operating_currency,
+                month.last_day(),
             )
 
-        return self.income_df, self.envelope_df, self.currency
+        # Set Budgeted in the future
+        # TODO(memst): make a note that individual envelopes are allowed to have
+        # many currencies, but all spending is converted into the primary
+        # currency when it's accumulated into the income_df
+        for index, month in enumerate(months):
+            income = self.income_df[month]
+            sum_total = income.avail_income
+
+            if (index == len(months) - 1) or self.reduce_inventory_to_currency(
+                sum_total, month
+            ) < 0:
+                self.income_df[month].budgeted_future = Inventory()
+            else:
+                next_month = months[index + 1]
+                opp_budgeted_next_month = -self.income_df[next_month].budgeted
+                if opp_budgeted_next_month < sum_total:
+                    self.income_df[month].budgeted_future = -opp_budgeted_next_month
+                else:
+                    self.income_df[month].budgeted_future = -sum_total
+
+        # Set to be budgeted
+        for month, income in self.income_df.items():
+            income.to_be_budgeted = envelope_convert.reduce_mixed_positions(
+                income.avail_income + income.budgeted,
+                self.price_map,
+                self.operating_currency,
+                month.last_day(),
+            )
+
+        return self.income_df, self.envelope_df, self.operating_currency
+
+    def reduce_inventory_to_currency(
+        self, inventory: Inventory, year_month: YearMonth
+    ) -> Decimal:
+        pos = inventory.reduce(
+            convert.convert_position,
+            self.operating_currency[0],
+            self.price_map,
+            year_month.last_day(),
+        ).get_only_position()
+        return pos.units.number if pos and pos.units else Decimal(0.00)
+
+    def _get_starting_balance(self):
+        starting_balance = Inventory()
+        query_str = f"select account, sum(position) from close on {self.start_date.first_day()} group by 1 order by 1;"
+
+        cursor = beanquery.connect(
+            "beancount:",
+            entries=self.entries,
+            errors=self.errors,
+            options=self.options_map,
+        ).execute(query_str)
+
+        for row in cursor:
+            row = typing.cast(tuple[Account, Inventory], row)
+            account, inventory = row
+            assert inventory is not None
+            if any(regexp.match(account) for regexp in self.budget_accounts):
+                starting_balance += inventory
+
+        return starting_balance
+
+    def _append_error(self, meta: Meta, message: str):
+        self.errors.append(BeancountError(meta, message, None))
 
     def _calculate_budget_activity(self):
         # Accumulate expenses for the period
-        balances = collections.defaultdict(
-            lambda: collections.defaultdict(inventory.Inventory)
+        balances: defaultdict[Account, defaultdict[YearMonth, Inventory]] = defaultdict(
+            lambda: defaultdict(Inventory)
         )
-        all_months = set()
 
         for entry in data.filter_txns(self.entries):
             # Check entry in date range
-            if entry.date < self.date_start or entry.date > self.date_end:
+            start_date = self.start_date.first_day()
+            end_date = self.end_date.last_day()
+            if entry.date < start_date or entry.date > end_date:
                 continue
 
-            month = (entry.date.year, entry.date.month)
-            # TODO domwe handle no transaction in a month?
-            all_months.add(month)
+            month = YearMonth.of_date(entry.date)
 
-            # TODO
             contains_budget_accounts = False
             for posting in entry.postings:
                 if any(
-                    regexp.match(posting.account)
-                    for regexp in self.budget_accounts
+                    regexp.match(posting.account) for regexp in self.budget_accounts
                 ):
                     contains_budget_accounts = True
                     break
@@ -274,111 +375,152 @@ class BeancountEnvelope:
                         account = target_account
                         break
 
-                account_type = account_types.get_account_type(account)
-                if posting.units.currency != self.currency:
-                    orig = posting.units.number
-                    if posting.price is not None:
-                        converted = posting.price.number * orig
-                        posting = data.Posting(
-                            posting.account,
-                            amount.Amount(converted, self.currency),
-                            posting.cost,
-                            None,
-                            posting.flag,
-                            posting.meta,
-                        )
-                    else:
-                        continue
-
-                if account_type == self.acctypes.income or (
-                    any(
-                        regexp.match(account)
-                        for regexp in self.income_accounts
-                    )
+                # If the posting is not in a tracked currency but it includes an
+                # fx conversion price, then immediately do the conversion.
+                # Otherwise we will rely on the latest price at the end of the
+                # month.
+                if (
+                    posting.units.currency not in self.operating_currency
+                    and posting.price is not None
+                    and posting.price.currency in self.operating_currency
+                    and posting.units.number is not None
+                    and posting.price.number is not None
                 ):
+                    converted = posting.price.number * posting.units.number
+                    posting = data.Posting(
+                        posting.account,
+                        Amount(converted, self.operating_currency[0]),
+                        posting.cost,
+                        None,
+                        posting.flag,
+                        posting.meta,
+                    )
+
+                # TODO(memst): log in CHANGELOG that we no longer use implicit
+                # income accounts as Income.
+                if any(regexp.match(account) for regexp in self.income_accounts):
                     account = "Income"
                 elif any(
-                    regexp.match(posting.account)
-                    for regexp in self.budget_accounts
+                    regexp.match(posting.account) for regexp in self.budget_accounts
                 ):
+                    # These accounts are in the budget. We look at the remaining
+                    # accounts to know where the moeny went.
                     continue
-                # TODO WARn of any assets / liabilities left
 
-                # TODO
                 balances[account][month].add_position(posting)
 
         # Reduce the final balances to numbers
-        sbalances = collections.defaultdict(dict)
+        sbalances: defaultdict[str, defaultdict[YearMonth, Inventory]] = defaultdict(
+            lambda: defaultdict(Inventory)
+        )
         for account, months in sorted(balances.items()):
-            for month, balance in sorted(months.items()):
-                year, mth = month
-                date = datetime.date(year, mth, 1)
-                balance = balance.reduce(
-                    convert.get_value, self.price_map, date
-                )
-                balance = balance.reduce(
-                    convert.convert_position,
-                    self.currency,
+            for year_month, balance in sorted(months.items()):
+                # We use the last day of the month for conversion in order to
+                # pick up the prices from the running month. Otherwise new
+                # currencies that received a price in the middle of the month
+                # will cause a crash.
+                date = year_month.last_day()
+
+                # TODO(memst): here we convert everything to one currency, look into passing the entire inventory further.
+                # org_balance = balance
+
+                total = balance.reduce(
+                    envelope_convert.convert_to_operating_currency,
                     self.price_map,
+                    self.operating_currency,
                     date,
                 )
-                try:
-                    pos = balance.get_only_position()
-                except AssertionError:
-                    print(balance)
-                    raise
-                total = pos.units.number if pos and pos.units else None
-                sbalances[account][month] = total
+                # balance = balance.reduce(
+                #     convert.convert_position,
+                #     self.currency,
+                #     self.price_map,
+                #     date,
+                # )
 
-        # Pivot the table
-        header_months = sorted(all_months)
-        # header = ["account"]+["{}-{:02d}".format(*m) for m in header_months]
-        self.income_df.loc["Avail Income", :] = Decimal(0.00)
+                # try:
+                #     pos = balance.get_only_position()
+                # except AssertionError:
+                #     print(balance)
 
-        for account in sorted(sbalances.keys()):
-            for month in header_months:
-                total = sbalances[account].get(month, None)
-                temp = total.quantize(self.Q) if total else 0.00
+                #     import code
+
+                #     code.interact(local=locals(), exitmsg="", banner="")
+                #     raise
+                # total = pos.units.number if pos and pos.units else None
+                sbalances[account][year_month] = total
+                # sbalances[account][year_month] = balance
+
+        for account, monthly_activity in sbalances.items():
+            for year_month, inventory in monthly_activity.items():
                 # swap sign to be more human readable
-                temp *= -1
+                inventory = -inventory
 
-                month_str = f"{str(month[0])}-{str(month[1]).zfill(2)}"
                 if account == "Income":
-                    self.income_df.loc["Avail Income", month_str] = Decimal(
-                        temp
-                    )
+                    self.income_df[year_month].avail_income = inventory
                 else:
-                    self.envelope_df.loc[account, (month_str, "budgeted")] = (
-                        Decimal(0.00)
-                    )
-                    self.envelope_df.loc[account, (month_str, "activity")] = (
-                        Decimal(temp)
-                    )
-                    self.envelope_df.loc[account, (month_str, "available")] = (
-                        Decimal(0.00)
-                    )
+                    # self.envelope_df[account][(year_month, "budgeted")] = Inventory()
+                    self.envelope_df[account][year_month].activity = inventory
+                    # self.envelope_df[account][(year_month, "available")] = Inventory()
+
+    def _get_repeat_range(
+        self, entry: directive._BaseEnvelopeDirective
+    ) -> Iterable[YearMonth]:
+        if "repeat-until" in entry.meta:
+            repeat_arg = entry.meta["repeat-until"]
+            # TODO(memst): add changelog note describing repeat-until tag
+            try:
+                repeat_until = (
+                    self.end_date
+                    if repeat_arg == "forever"
+                    else YearMonth.of_string(repeat_arg)
+                )
+                return months_between(entry.month, repeat_until)
+            except ValueError as e:
+                self._append_error(
+                    entry.meta,
+                    f'repeat-until argument must be the string "forever" or in format "YYYY-MM".\n{e}',
+                )
+                return [entry.month]
+        return [entry.month]
 
     def _calc_budget_budgeted(self):
-        # rows = {}
+        budget_lines: dict[tuple[Account, YearMonth], Meta] = {}
+        allocate_fill_lines: dict[tuple[Account, YearMonth], Meta] = {}
         for e in self.entries:
-            if isinstance(e, Custom) and e.type == self.etype:
-                if e.values[0].value == "allocate":
-                    month = f"{e.date.year}-{e.date.month:02}"
-                    try:
-                        _ = self.envelope_df.loc[
-                            e.values[1].value, (month, "budgeted")
-                        ]
-                    except KeyError:
-                        self.envelope_df.loc[
-                            e.values[1].value, (month, "budgeted")
-                        ] = Decimal(0.00)
-
-                    self.envelope_df.loc[
-                        e.values[1].value, (month, "budgeted")
-                    ] = Decimal(
-                        self.envelope_df.loc[
-                            e.values[1].value, (month, "budgeted")
-                        ]
-                    ) + Decimal(
-                        e.values[2].value
-                    )
+            e = directive.parse_directive(e, etype=self.etype, errors=self.errors)
+            if isinstance(e, directive.Allocate):
+                for month in self._get_repeat_range(e):
+                    if (e.account, month) in allocate_fill_lines:
+                        self._append_error(
+                            e.meta,
+                            f"Tried to provide a budget for an envelope ({month} {e.account}) that allocates a fill.",
+                        )
+                        continue
+                    self.envelope_df[e.account][month].budgeted.add_amount(e.amount)
+                    budget_lines[e.account, month] = e.meta
+            if isinstance(e, directive.AllocateFill):
+                # TODO(memst): this is not quite correct because accounts that
+                # had no activity will not show up in this list and the user can
+                # still add a budget for it in the following lines. But
+                # allocating a budget for a new account and then allocating a
+                # fill would cause an error.
+                accounts = [
+                    account
+                    for account in self.envelope_df
+                    if e.account_re.match(account)
+                ]
+                for month in self._get_repeat_range(e):
+                    for account in accounts:
+                        if (account, month) in budget_lines:
+                            self._append_error(
+                                e.meta,
+                                f"Tried to allocate a fill to an envelope ({month} {account}) with an existing budget.",
+                            )
+                            continue
+                        self.envelope_df[account][month].allocate_fill = True
+                        allocate_fill_lines[account, month] = e.meta
+            if isinstance(e, directive.IncomeOverride):
+                for month in self._get_repeat_range(e):
+                    inv = Inventory()
+                    inv.add_amount(e.amount)
+                    self.income_df[month].avail_income = inv

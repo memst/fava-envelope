@@ -1,5 +1,13 @@
 # Changelog
 
+## 2024.12.19
+* Removed "envelopeCURRENCY" directives.
+* Added support for handling budgeting in multiple currencies at a time.
+* "allocate" directives now MUST specify the currency, e.g.
+    ```
+    2015-01-01 custom "envelope" "allocate" "Expenses:Health:Dental:Insurance" 5.80 USD
+    ```
+
 ## [0.5.9](https://github.com/polarmutex/fava-envelope/compare/v0.5.8...v0.5.9) (2024-07-05)
 
 
