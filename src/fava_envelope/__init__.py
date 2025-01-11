@@ -1,10 +1,12 @@
 from collections import defaultdict
 
+from beancount.core import prices
 from beancount.core.data import Account
 from beancount.core.inventory import Inventory
 from fava.context import g
 from fava.ext import FavaExtensionBase
 
+from fava_envelope.modules import convert
 from fava_envelope.modules.beancount_envelope import BeancountEnvelope
 from fava_envelope.modules.budgets import Envelope, Income
 from fava_envelope.modules.year_month import YearMonth, YearMonthStr
@@ -19,6 +21,8 @@ class EnvelopeBudget(FavaExtensionBase):
 
     income_tables: defaultdict[YearMonth, Income]
     envelope_tables: defaultdict[Account, defaultdict[YearMonth, Envelope]]
+    primary_currency: str
+    price_map: prices.PriceMap
 
     available_months: list[YearMonth]
     available_months_str: list[YearMonthStr]
@@ -56,7 +60,14 @@ class EnvelopeBudget(FavaExtensionBase):
             currency,
             g.ledger.errors,
         )
+        # TODO memst: I don't like how this code is structured and BeancountEnvelope
+        # should have a better interface. The evnvelope_tables is computed only once per
+        # instance anyway (argumentless function), so it should be completely fine to make
+        # the whole thing a dataclass or something similar where you can just access some
+        # values after creation.
         (self.income_tables, self.envelope_tables, _) = module.envelope_tables()
+        self.primary_currency = module.get_primary_currency()
+        self.price_map = module.price_map
 
         self.available_months = module.available_months
         self.available_months_str = [str(month) for month in self.available_months]
@@ -76,44 +87,34 @@ class EnvelopeBudget(FavaExtensionBase):
         return None
 
     def generate_income_query_tables(self, month_str: str):
+        primary_currency_amt_string = f"Amount ({self.primary_currency})"
         income_table_types = []
         income_table_types.append(("Name", str(str)))
+        income_table_types.append((primary_currency_amt_string, str(Inventory)))
         income_table_types.append(("Amount", str(Inventory)))
 
         income_table_rows = []
 
         if month_str is not None:
             month = YearMonth.of_string(month_str)
-            income_table_rows.append(
-                {
-                    "Name": "Funds for month",
-                    "Amount": self.income_tables[month].avail_income,
-                }
-            )
-            income_table_rows.append(
-                {
-                    "Name": "Overspent in prev month",
-                    "Amount": self.income_tables[month].overspent,
-                }
-            )
-            income_table_rows.append(
-                {
-                    "Name": "Budgeted for month",
-                    "Amount": self.income_tables[month].budgeted,
-                }
-            )
-            income_table_rows.append(
-                {
-                    "Name": "To be budgeted for month",
-                    "Amount": self.income_tables[month].to_be_budgeted,
-                }
-            )
-            income_table_rows.append(
-                {
-                    "Name": "Budgeted in the future",
-                    "Amount": self.income_tables[month].budgeted_future,
-                }
-            )
+            for name, amount in [
+                ("Income this month", self.income_tables[month].avail_income),
+                ("Funds from last month", self.income_tables[month].rolled_over),
+                ("Budgeted for month", self.income_tables[month].budgeted),
+                ("To be budgeted for month", self.income_tables[month].to_be_budgeted),
+            ]:
+                income_table_rows.append(
+                    {
+                        "Name": name,
+                        primary_currency_amt_string: convert.convert_inventory_to_operating_currency(
+                            amount,
+                            self.price_map,
+                            self.primary_currency,
+                            month.last_day(),
+                        ),
+                        "Amount": amount,
+                    }
+                )
 
         return income_table_types, income_table_rows
 

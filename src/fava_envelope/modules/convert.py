@@ -29,7 +29,6 @@ def convert_to_operating_currency(
     if pos.units.number is None:
         return pos.units
 
-    convert.convert_position
     for value_currency in operating_currencies:
         base_quote = (pos.units.currency, value_currency)
         price_date, price_number = prices.get_price(price_map, base_quote, date)
@@ -37,6 +36,26 @@ def convert_to_operating_currency(
             return Amount(pos.units.number * price_number, value_currency)
 
     return pos.units
+
+
+def convert_inventory_to_operating_currency(
+    inventory: Inventory,
+    price_map: prices.PriceMap,
+    operating_currency: str,
+    date: datetime.date,
+) -> Inventory:
+    """Attempts to convert each position in the inventory to the operating currency.
+
+    Returns:
+      An inventory with the converted positions."""
+
+    reduced_inventory = Inventory()
+    for position in inventory:
+        reduced_inventory.add_amount(
+            convert.convert_position(position, operating_currency, price_map, date)
+        )
+
+    return reduced_inventory
 
 
 def reduce_mixed_positions(
@@ -69,13 +88,9 @@ def reduce_mixed_positions(
     if not is_mixed:
         return inventory
 
-    reduced_inventory = Inventory()
-    for position in inventory:
-        reduced_inventory.add_amount(
-            convert.convert_position(position, operating_currency[0], price_map, date)
-        )
-
-    return reduced_inventory
+    return convert_inventory_to_operating_currency(
+        inventory, price_map, operating_currency[0], date
+    )
 
 
 def is_positive_inventory(inventory: Inventory) -> bool:

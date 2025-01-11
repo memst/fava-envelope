@@ -6,9 +6,8 @@ from beancount.core.inventory import Inventory
 @dataclass
 class Income:
     avail_income: Inventory = field(default_factory=Inventory)
-    overspent: Inventory = field(default_factory=Inventory)
+    rolled_over: Inventory = field(default_factory=Inventory)
     budgeted: Inventory = field(default_factory=Inventory)
-    budgeted_future: Inventory = field(default_factory=Inventory)
     to_be_budgeted: Inventory = field(default_factory=Inventory)
 
 

@@ -197,7 +197,7 @@ class BeancountEnvelope:
         if self.include_starting_balance:
             self.income_df[months[0]].avail_income += self._get_starting_balance()
 
-        # Set available
+        # Set envelope available funds
         for envelope_account, envelope_months in self.envelope_df.items():
             for month_index, month in enumerate(months):
                 if month_index == 0:
@@ -214,7 +214,7 @@ class BeancountEnvelope:
                 # convert the entire inventory to primary currency and deduce
                 # whether the total allowence was positive.
                 if (not self.negative_rollover) and (
-                    self.reduce_inventory_to_currency(prev_available, month) < 0
+                    self._reduce_inventory_to_currency(prev_available, month) < 0
                 ):
                     prev_available = Inventory()
 
@@ -238,77 +238,32 @@ class BeancountEnvelope:
                     month.last_day(),
                 )
 
-        # Set overspent
-        for month_index, month in enumerate(months):
-            if month_index == 0:
-                self.income_df[month].overspent = Inventory()
-            else:
-                overspent = Decimal(0.00)
-                for envelope_account, account_data in self.envelope_df.items():
-                    available = self.reduce_inventory_to_currency(
-                        account_data[months[month_index - 1]].available, month
-                    )
-                    if available < Decimal(0.00):
-                        overspent += available
-                inventory = Inventory()
-                inventory.add_amount(Amount(overspent, self.operating_currency[0]))
-                self.income_df[month].overspent = inventory
-
-        # Set Budgeted for month
         for month in months:
-            self.income_df[month].budgeted = -sum(
+            income = self.income_df[month]
+            prev_income = self.income_df[month.prev_month()]
+
+            income.rolled_over = prev_income.to_be_budgeted
+            income.budgeted = -sum(
                 [
                     account_data[month].budgeted
                     for account_data in self.envelope_df.values()
                 ],
                 Inventory(),
             )
-
-        # Adjust Avail Income
-        for index, month in enumerate(months):
-            if index == 0:
-                continue
-            prev_income = self.income_df[months[index - 1]]
-            income = self.income_df[month]
-            income.avail_income = envelope_convert.reduce_mixed_positions(
-                income.avail_income + prev_income.avail_income + prev_income.budgeted,
+            income.to_be_budgeted = envelope_convert.reduce_mixed_positions(
+                income.avail_income + income.rolled_over + income.budgeted,
                 self.price_map,
                 self.operating_currency,
                 month.last_day(),
             )
 
-        # Set Budgeted in the future
         # TODO(memst): make a note that individual envelopes are allowed to have
         # many currencies, but all spending is converted into the primary
         # currency when it's accumulated into the income_df
-        for index, month in enumerate(months):
-            income = self.income_df[month]
-            sum_total = income.avail_income
-
-            if (index == len(months) - 1) or self.reduce_inventory_to_currency(
-                sum_total, month
-            ) < 0:
-                self.income_df[month].budgeted_future = Inventory()
-            else:
-                next_month = months[index + 1]
-                opp_budgeted_next_month = -self.income_df[next_month].budgeted
-                if opp_budgeted_next_month < sum_total:
-                    self.income_df[month].budgeted_future = -opp_budgeted_next_month
-                else:
-                    self.income_df[month].budgeted_future = -sum_total
-
-        # Set to be budgeted
-        for month, income in self.income_df.items():
-            income.to_be_budgeted = envelope_convert.reduce_mixed_positions(
-                income.avail_income + income.budgeted,
-                self.price_map,
-                self.operating_currency,
-                month.last_day(),
-            )
 
         return self.income_df, self.envelope_df, self.operating_currency
 
-    def reduce_inventory_to_currency(
+    def _reduce_inventory_to_currency(
         self, inventory: Inventory, year_month: YearMonth
     ) -> Decimal:
         pos = inventory.reduce(
@@ -524,3 +479,9 @@ class BeancountEnvelope:
                     inv = Inventory()
                     inv.add_amount(e.amount)
                     self.income_df[month].avail_income = inv
+
+    def get_primary_currency(self):
+        return self.operating_currency[0]
+
+    def get_price_map(self):
+        return self.price_map
