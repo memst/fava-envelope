@@ -1,11 +1,31 @@
 # fava-envelope
 
+## memst/fava-envelope
+
+[![Run on Repl.it](https://repl.it/badge/github/memst/fava-envelope)](https://repl.it/github/memst/fava-envelope)
+_(clicking this replit link should let you create an actually working repl)_
+
+This is a fork of [polarmutex/fava-envelope](https://github.com/polarmutex/fava-envelope) with a few changes, most notably:
+- Removing pandas dependency (while making things faster)
+- Caching envelope results until source files are changed
+- Addition of multi-currency support
+- Simplification existing budgeting table
+- Chaged directive parsing to use ACCOUNT instead of STRING where appropriate
+- New directives for better control of the extension's behaviour
+
+Please check out the [changelog](https://github.com/memst/fava-envelope/blob/master/CHANGELOG.md) for a bit more details about what changed.
+
+The syntax highlighting of this extension is supported in Sublime Text text editor by [my fork of norseghost/sublime-beancount](https://github.com/memst/sublime-beancount).
+
+Please raise any issues if you confused about installation or usage. I'd be happy to help.
+
+## original introduction
+
 A beancount fava extension to add a envelope budgeting capability to fava and beancount. It is developed as an fava plugin and CLI.
 
 ![PyPI](https://img.shields.io/pypi/v/fava-envelope?color=success&label=pypi%20package)
 ![GitHub last commit](https://img.shields.io/github/last-commit/bryall/fava-envelope)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Run on Repl.it](https://repl.it/badge/github/memst/fava-envelope)](https://repl.it/github/memst/fava-envelope)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/polarmutex/fava-envelope/master.svg)](https://results.pre-commit.ci/latest/github/polarmutex/fava-envelope/master)
 
 ## Repl.it
