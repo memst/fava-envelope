@@ -1,2 +1,7 @@
 language = "python3"
-run = "fava -H 0.0.0.0 example.beancount"
+run = "uv run fava -H 0.0.0.0 example.beancount"
+modules = ["python-3.10", "web", "bash"]
+
+[[ports]]
+localPort = 5000
+externalPort = 80

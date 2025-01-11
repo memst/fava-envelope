@@ -5,7 +5,7 @@ A beancount fava extension to add a envelope budgeting capability to fava and be
 ![PyPI](https://img.shields.io/pypi/v/fava-envelope?color=success&label=pypi%20package)
 ![GitHub last commit](https://img.shields.io/github/last-commit/bryall/fava-envelope)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Run on Repl.it](https://repl.it/badge/github/bryall/fava-envelope)](https://repl.it/github/bryall/fava-envelope)
+[![Run on Repl.it](https://repl.it/badge/github/memst/fava-envelope)](https://repl.it/github/memst/fava-envelope)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/polarmutex/fava-envelope/master.svg)](https://results.pre-commit.ci/latest/github/polarmutex/fava-envelope/master)
 
 ## Repl.it
