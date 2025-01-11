@@ -19,7 +19,6 @@ classifiers = [
 
 dependencies = [
     "fava>=1.29",
-    "pandas>=2.0.3",
     "beanquery",
 ]
 

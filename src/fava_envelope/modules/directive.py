@@ -1,5 +1,5 @@
 import re
-from typing import Any, overload
+from typing import Any, TypeVar, overload
 
 import beancount.core.account
 from beancount.core.amount import Amount
@@ -35,17 +35,20 @@ class _BaseEnvelopeDirective:
         """
         return re.sub(r"(?<!^)(?=[A-Z])", " ", cls.__qualname__).lower()
 
-
+# These TypeVars can be removed in 3.12
+TA = TypeVar("TA")
+TB = TypeVar("TB")
+TC = TypeVar("TC")
 @overload
-def _cast_values[TA](
+def _cast_values(
     values: list[ValueType], classes: tuple[type[TA]], meta
 ) -> tuple[TA]: ...
 @overload
-def _cast_values[TA, TB](
+def _cast_values(
     values: list[ValueType], classes: tuple[type[TA], type[TB]], meta
 ) -> tuple[TA, TB]: ...
 @overload
-def _cast_values[TA, TB, TC](
+def _cast_values(
     values: list[ValueType], classes: tuple[type[TA], type[TB], type[TC]], meta
 ) -> tuple[TA, TB, TC]: ...
 
@@ -152,7 +155,8 @@ def parse_directive(
     return None
 
 
-def parse_directive_as[T: _BaseEnvelopeDirective](
+T = TypeVar("T", bound=_BaseEnvelopeDirective)
+def parse_directive_as(
     entry: Any, type: type[T], etype: str, errors: list[BeancountError]
 ) -> T | None:
     return parse_directive(entry, etype, errors, directive_types=[type])  # type: ignore
