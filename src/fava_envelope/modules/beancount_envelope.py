@@ -146,7 +146,7 @@ class BeancountEnvelope:
                 if e.values[0].value == "negative rollover":
                     self._append_error(
                         e.meta,
-                        "'negative rollover' directive is deprecated. Use '... \"allow negative rollowver\" BOOL'.",
+                        "'... \"negative rollover\" STRING' directive is deprecated. Use '... \"allow negative rollowver\" BOOL'.",
                     )
                     if e.values[1].value == "allow":
                         self.negative_rollover = True
@@ -171,6 +171,8 @@ class BeancountEnvelope:
                         continue
                     self.include_starting_balance = arg.value
 
+        if len(income_accounts) == 0:
+            income_accounts.append(re.compile(r"^Income:"))
         return (
             start_date if start_date else extension_init_date,
             budget_accounts,
@@ -205,16 +207,12 @@ class BeancountEnvelope:
                 else:
                     prev_available = envelope_months[months[month_index - 1]].available
 
-                # TODO(memst): add a changelog note that negative rollover will
-                # convert eventhing to the primary currency (the first currency
-                # declared as operating_currency) in order to determine if the
-                # envelope balance was negative.
-                # TODO(memst): Here we check only the primary currency, we should
-                # just filter the prev inventory with positive allowences or
-                # convert the entire inventory to primary currency and deduce
-                # whether the total allowence was positive.
-                if (not self.negative_rollover) and (
-                    self._reduce_inventory_to_currency(prev_available, month) < 0
+                if (
+                    (not self.negative_rollover)
+                    and (
+                        not envelope_convert.is_positive_inventory(prev_available)
+                    )  # redundant but avoids converting if everything's positive.
+                    and (self._reduce_inventory_to_currency(prev_available, month) < 0)
                 ):
                     prev_available = Inventory()
 
@@ -256,10 +254,6 @@ class BeancountEnvelope:
                 self.operating_currency,
                 month.last_day(),
             )
-
-        # TODO(memst): make a note that individual envelopes are allowed to have
-        # many currencies, but all spending is converted into the primary
-        # currency when it's accumulated into the income_df
 
         return self.income_df, self.envelope_df, self.operating_currency
 
@@ -351,8 +345,6 @@ class BeancountEnvelope:
                         posting.meta,
                     )
 
-                # TODO(memst): log in CHANGELOG that we no longer use implicit
-                # income accounts as Income.
                 if any(regexp.match(account) for regexp in self.income_accounts):
                     account = "Income"
                 elif any(
@@ -422,7 +414,6 @@ class BeancountEnvelope:
     ) -> Iterable[YearMonth]:
         if "repeat-until" in entry.meta:
             repeat_arg = entry.meta["repeat-until"]
-            # TODO(memst): add changelog note describing repeat-until tag
             try:
                 repeat_until = (
                     self.end_date

@@ -1,12 +1,32 @@
 # Changelog
 
-## 2024.12.19
-* Removed "envelopeCURRENCY" directives.
-* Added support for handling budgeting in multiple currencies at a time.
-* "allocate" directives now MUST specify the currency, e.g.
+## 2025.01.11
+* Minimum python version has been bumped to 3.10 in order to use some new language features.
+* Added support for handling budgeting in multiple currencies.
+    * Budgets can be specified in and envelopes can hold any number of currencies.
+    * Currencies can be assigned priority by using `currency` directive, with the higher-up currency in the file becoming higher priority. The highest priority currency is the primary currency.
+    * The extension will attempt to cancel out opposing balances by doing conversions to the higher priority currency of the two at the latest conversion rate available at the end of the month. Balances that are all in the same direction will remain unconverted.
+    * `negative rollover` will resolve by converting the balance of the envelope to the primary currency in order to determine if the balance is truly negative.
+* Changed some directives:
+    * The 2nd argument of the `mapping` directive is now an `ACCOUNT` instead of `STRING`, which means that it shouldn't be in quotes.
+    * The 1st argument of the `allocate` directive is also now an `ACCOUNT`
+    * `allocate` directives now MUST specify the currency, e.g.
     ```
-    2015-01-01 custom "envelope" "allocate" "Expenses:Health:Dental:Insurance" 5.80 USD
+    2015-01-01 custom "envelope" "allocate" Expenses:Health:Dental:Insurance 5.80 USD
     ```
+    * `negative rollover` is now called `allow negative rollover` and accepts a boolean (beancount's booleans must be all-caps: `TRUE` or `FALSE`).
+    * Added `include starting balance` directive that accepts a boolean and, if set to `TRUE`, includes the balances of the budget accounts as available income on the first budgeting month.
+    * Added `allocate fill` directive that accepts a regex and will assign each envelope matching the regex enough budget to offset its balance.
+    * Added `income override` directive that accepts an `AMOUNT` and overrides whatever value would've been computed as available income for that month.
+    * `allocate`, `allocate fill`, and `income override` directives now support a new `repeat-until` metadata tag that repeats the same instructions until the given month. It can be used as such:
+    ```
+    2015-01-01 custom "envelope" "income override" 1000.00 USD
+      repeat-until: "2015-12" ; this date is inclusive, so there will be an income override directive for each month of 2015.
+    ```
+* The budgeting table now has the following rows: income this month, funds from last month, budgeted for month, to be budgeted for month.
+    * The month's funds consist of the sum of income this month and funds from the previous month.
+    * 'Budgeted for month' row reflects how much was allocated to this month's envelopes.
+    * 'To be budgeted for month' is the difference between the month's funds and what was allocated to envelopes. This row is copied over to the following month's 'funds from last month' row.
 
 ## [0.5.9](https://github.com/polarmutex/fava-envelope/compare/v0.5.8...v0.5.9) (2024-07-05)
 
