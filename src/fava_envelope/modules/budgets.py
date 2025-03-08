@@ -18,3 +18,6 @@ class Envelope:
 
     activity: Inventory = field(default_factory=Inventory)
     available: Inventory = field(default_factory=Inventory)
+
+    def is_empty(self):
+        return all([self.budgeted.is_empty(), self.activity.is_empty(), self.available.is_empty()])

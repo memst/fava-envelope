@@ -130,9 +130,11 @@ class EnvelopeBudget(FavaExtensionBase):
 
         if month_str is not None:
             month = YearMonth.of_string(month_str)
-            for index, e_row in self.envelope_tables.items():
+            for account, e_row in self.envelope_tables.items():
+                if e_row[month].is_empty():
+                    continue
                 row = {}
-                row["Account"] = index
+                row["Account"] = account
                 row["Rolled over Allowence"] = e_row[month.prev_month()].available
                 row["Budgeted"] = e_row[month].budgeted
                 row["Activity"] = e_row[month].activity
