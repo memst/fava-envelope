@@ -1,6 +1,6 @@
 [project]
 name = "memst-fava-envelope"
-version = "2024.12.19"
+version = "2025.01.11"
 description = ""
 readme = "README.md"
 keywords = ["fava", "budget", "envelope"]
