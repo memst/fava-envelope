@@ -1,0 +1,48 @@
+{% import '_query_table.html' as fava_querytable %}
+
+{% set sort_type = fava_querytable.sort_type %}
+
+{% macro querycell(ledger, name, value, type_) %}
+{% set type = type_|string %}
+{% if type == "<class 'fava_envelope.modules.envelope_link.EnvelopeLink'>" %}
+<td><a href="{{ extension.extra_escape(url_for('account', name='Expenses', time=value.year_month, account=value.linked_accounts))  }}">
+  {{- value.name -}}
+</a></td>
+{% else %}
+{{ fava_querytable.querycell(ledger, name, value, type_) }}
+{% endif %}
+{% endmacro %}
+
+{% macro querytable(ledger, contents, types, rows, filter_empty=None, footer=None) %}
+{% if contents %}
+<pre><code>{{ contents }}</code></pre>
+{% elif types %}
+<table is="sortable-table" class="queryresults">
+  <thead>
+    <tr>
+      {% for name, type in types %}
+      <th data-sort="{{ sort_type[type|string] or "string" }}">{{ name }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows if filter_empty == None or not row[filter_empty].is_empty() %}
+    <tr>
+      {% for name, type in types %}
+      {{ querycell(ledger, name, row[name], type)  }}
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+  {% if footer %}
+  <tfoot>
+    <tr>
+      {% for type, value in footer %}
+        {{ querycell(ledger, '', value, type)  }}
+      {% endfor %}
+    </tr>
+  </tfoot>
+  {% endif %}
+</table>
+{% endif %}
+{% endmacro %}

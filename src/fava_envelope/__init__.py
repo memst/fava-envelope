@@ -9,6 +9,7 @@ from fava.ext import FavaExtensionBase
 from fava_envelope.modules import convert
 from fava_envelope.modules.beancount_envelope import BeancountEnvelope
 from fava_envelope.modules.budgets import Envelope, Income
+from fava_envelope.modules.envelope_link import EnvelopeLink
 from fava_envelope.modules.year_month import YearMonth, YearMonthStr
 
 
@@ -66,6 +67,7 @@ class EnvelopeBudget(FavaExtensionBase):
         # the whole thing a dataclass or something similar where you can just access some
         # values after creation.
         (self.income_tables, self.envelope_tables, _) = module.envelope_tables()
+        self.envelope_to_accounts = module.mappings_used
         self.primary_currency = module.get_primary_currency()
         self.price_map = module.price_map
 
@@ -120,7 +122,7 @@ class EnvelopeBudget(FavaExtensionBase):
 
     def generate_envelope_query_tables(self, month_str: str):
         envelope_table_types = []
-        envelope_table_types.append(("Account", str(str)))
+        envelope_table_types.append(("Envelope", str(EnvelopeLink)))
         envelope_table_types.append(("Rolled over Allowence", str(Inventory)))
         envelope_table_types.append(("Budgeted", str(Inventory)))
         envelope_table_types.append(("Activity", str(Inventory)))
@@ -130,11 +132,11 @@ class EnvelopeBudget(FavaExtensionBase):
 
         if month_str is not None:
             month = YearMonth.of_string(month_str)
-            for account, e_row in self.envelope_tables.items():
+            for envelope_name, e_row in self.envelope_tables.items():
                 if e_row[month].is_empty():
                     continue
                 row = {}
-                row["Account"] = account
+                row["Envelope"] = EnvelopeLink(envelope_name, month_str, self.envelope_to_accounts[envelope_name])
                 row["Rolled over Allowence"] = e_row[month.prev_month()].available
                 row["Budgeted"] = e_row[month].budgeted
                 row["Activity"] = e_row[month].activity
@@ -142,3 +144,28 @@ class EnvelopeBudget(FavaExtensionBase):
                 envelope_table_rows.append(row)
 
         return envelope_table_types, envelope_table_rows
+    
+    @staticmethod
+    def extra_escape(url: str):
+        """
+        
+        Flask's url_for method does not escape some characters that Chrome (and mabe
+        other browsers) try to replace, which causes unnecessary url navigations. Add
+        extra escapes on top of that function. """
+
+        # Have to ensure that the first ? character that separates the tags from the rest
+        # of the url is not escaped.
+        spl = url.split('?', maxsplit=1)
+        if len(spl) == 1:
+            return url
+        
+        escaped = (spl[1]
+                .replace(':', r'%3A')
+                .replace('$', r'%24')
+                .replace("(", r"%28")
+                .replace(")", r"%29")
+                .replace("?", r"%3F")
+                )
+        
+        return spl[0] + "?" + escaped
+

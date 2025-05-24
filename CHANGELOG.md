@@ -1,5 +1,9 @@
 # Changelog
 
+## Upcoming
+* Envelopes with no activity or balance no longer show up in the list.
+* Envelopes now link to their activity breakdown.
+
 ## 2025.01.11
 * Minimum python version has been bumped to 3.10 in order to use some new language features.
 * Added support for handling budgeting in multiple currencies.

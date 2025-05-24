@@ -30,6 +30,8 @@ class BeancountEnvelope:
 
     # Regex of beancount account and corresponding budgeting account
     mappings: list[tuple[re.Pattern, str]]
+    # A dict from budgeting account to the set of beancount accounts included in it
+    mappings_used: defaultdict[str, set[str]]
 
     # The list of currencies that the envelope allows with no conversions, first
     # element of the list is the primary currency.
@@ -78,6 +80,7 @@ class BeancountEnvelope:
             self.months_ahead,
             self.operating_currency,
         ) = self._find_envelope_settings()
+        self.mappings_used = defaultdict(set)
 
         if currency:
             self.operating_currency = [currency]
@@ -321,8 +324,11 @@ class BeancountEnvelope:
                 account = posting.account
                 for regexp, target_account in self.mappings:
                     if regexp.match(account):
+                        self.mappings_used[target_account].add(account)
                         account = target_account
                         break
+                else:
+                    self.mappings_used[account].add(account)
 
                 # If the posting is not in a tracked currency but it includes an
                 # fx conversion price, then immediately do the conversion.

@@ -1,5 +1,5 @@
 {# This is a Jinja template that is the page displayed when clicking the link on the sidebar. #}
-{% import "_query_table.html" as querytable with context %}
+{% import "_envelope_query_table.html" as querytable with context %}
 {# TODO memst: handle the currency argument properly #}
 {% set currency = request.args.get('currency') %}
 {% if currency == None%}
